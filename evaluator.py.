@@ -1,0 +1,151 @@
+
+import os
+import json
+from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
+
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY is missing.")
+
+client = genai.Client(api_key=API_KEY)
+
+MODEL_NAME = "gemini-2.5-flash"
+
+RUBRIC = {
+    "accuracy": "All technical explanations are factually correct.",
+    "beginner_friendly": "The lesson uses simple English suitable for a 12th-grade beginner.",
+    "examples": "The lesson includes at least one clear and practical real-life example.",
+    "jargon_explanation": "Technical terms are explained in simple language when introduced.",
+    "completeness": "The lesson covers what RAG is, why it matters, and how it works, including retrieval, embeddings, context, and generation.",
+    "teaching_flow": "The lesson follows a logical order from basic ideas to examples and summary."
+}
+
+REFERENCE_FACTS = """
+Verified reference facts about Retrieval-Augmented Generation:
+
+1. RAG stands for Retrieval-Augmented Generation.
+2. RAG combines information retrieval with text generation.
+3. A user submits a question.
+4. The system searches an external knowledge source for relevant information.
+5. Documents are commonly divided into smaller sections called chunks.
+6. Embeddings represent text as numerical vectors that capture meaning.
+7. A vector database can store and search these embeddings.
+8. Retrieval finds information relevant to the user's question.
+9. The retrieved information is provided as context to a language model.
+10. The language model uses the context to generate an answer.
+11. RAG can help provide current or domain-specific information.
+12. RAG does not guarantee that every generated answer is correct.
+
+Important:
+Do not accept false statements just because the lesson is well written.
+"""
+
+
+def evaluate_lesson(lesson):
+
+    prompt = f"""
+You are a strict educational quality evaluator.
+
+Evaluate the following beginner lesson about RAG.
+
+LESSON:
+{lesson}
+
+QUALITY RUBRIC:
+{json.dumps(RUBRIC, indent=2)}
+
+REFERENCE FACTS:
+{REFERENCE_FACTS}
+
+EVALUATION RULES:
+
+1. Every checkpoint must receive exactly PASS or FAIL.
+2. No partial scores are allowed.
+3. Check factual accuracy carefully.
+4. A false technical statement must fail accuracy.
+5. Missing required information must fail completeness.
+6. Unexplained technical terms must fail jargon_explanation.
+7. Do not reward writing style if the technical content is incorrect.
+8. Overall result is PASS only when all six checks pass.
+9. Give specific and actionable feedback for every failed check.
+10. Do not invent problems that are not present.
+
+Return ONLY valid JSON in this exact structure:
+
+{{
+  "accuracy": "PASS",
+  "beginner_friendly": "PASS",
+  "examples": "FAIL",
+  "jargon_explanation": "PASS",
+  "completeness": "FAIL",
+  "teaching_flow": "PASS",
+  "overall_result": "FAIL",
+  "feedback": [
+    "Explain the missing concept."
+  ]
+}}
+"""
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config={
+            "response_mime_type": "application/json"
+        }
+    )
+
+    if not response.text:
+        raise ValueError("Evaluator returned an empty response.")
+
+    try:
+        result = json.loads(response.text)
+    except json.JSONDecodeError:
+        raise ValueError("Evaluator returned invalid JSON.")
+
+    required_checks = list(RUBRIC.keys())
+
+    for check in required_checks:
+        if result.get(check) not in ["PASS", "FAIL"]:
+            raise ValueError(
+                f"Invalid evaluator result for {check}"
+            )
+
+    if not isinstance(result.get("feedback"), list):
+        raise ValueError("Feedback must be a list.")
+
+    # Programmatic validation of essential RAG coverage
+    lesson_lower = lesson.lower()
+
+    required_terms = [
+        "retrieval",
+        "generation",
+        "embedding",
+        "context",
+        "language model"
+    ]
+
+    missing_terms = [
+        term for term in required_terms
+        if term not in lesson_lower
+    ]
+
+    if missing_terms:
+        result["completeness"] = "FAIL"
+        result["feedback"].append(
+            "Missing required terms: "
+            + ", ".join(missing_terms)
+        )
+
+    # Final decision: all checks must pass
+    result["overall_result"] = (
+        "PASS"
+        if all(result[check] == "PASS"
+               for check in required_checks)
+        else "FAIL"
+    )
+
+    return result
